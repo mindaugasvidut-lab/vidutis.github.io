@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Infinite Canvas – v3.9 (video: white background)</title>
+<style>
+  :root { --bg:#fff; --toolbar:#eef4ff; --panel:#f7faff; --border:#d6e4ff; --muted:#5a6b85; --ink:#0b1220; --accent:#3b82f6; }
+  html, body { height:100%; margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui; }
+  #app { height:100%; display:grid; grid-template-columns: 1fr 220px; grid-template-rows: auto 1fr; grid-template-areas: "toolbar toolbar" "stage marks"; }
+  .toolbar { grid-area: toolbar; display:flex; gap:.4rem; align-items:center; padding:.4rem .5rem; background:var(--toolbar); border-bottom:1px solid var(--border); }
+  .btn { border:1px solid var(--border); background:var(--panel); border-radius:.5rem; padding:.35rem .5rem; cursor:pointer; min-width:2rem; text-align:center; }
+  .btn[aria-pressed="true"] { outline:2px solid var(--accent); }
+  .btn:disabled { opacity:.5; pointer-events:none; }
+  .spacer { flex:1; }
+  #stage { grid-area: stage; position:relative; overflow:hidden; }
+  #canvas { position:absolute; inset:0; width:100%; height:100%; touch-action:none; display:block; }
+  #marks { grid-area: marks; border-left:1px solid var(--border); background:var(--panel); padding:.5rem; overflow:auto; }
+  #marks h3 { margin:.25rem 0 .5rem; font-size:.9rem; color:var(--muted); }
+  #marks ul { list-style:none; padding:0; margin:0; display:grid; gap:.25rem; }
+  #marks li { display:flex; justify-content:space-between; align-items:center; gap:.5rem; border:1px solid var(--border); background:#fff; border-radius:.5rem; padding:.3rem .4rem; }
+  #marks button { border:1px solid var(--border); background:var(--panel); border-radius:.4rem; padding:.2rem .4rem; cursor:pointer; }
+  #status { margin-left:.4rem; color:var(--muted); font-size:.85rem; }
+  
+  /* --- Zoom UI (vertical range + readout) --- */
+  #zoomBox { display:flex; gap:.6rem; align-items:flex-start; margin-bottom:.5rem; }
+  #zoomCol { display:flex; flex-direction:column; align-items:center; gap:.35rem; }
+  #zoomRange { 
+    -webkit-appearance: slider-vertical; /* Safari/Chromium */
+    writing-mode: bt-lr; /* Firefox */
+    width: 1.2rem; height: 180px; padding:0; margin:0;
+  }
+  #zoomLabel { font-size:.85rem; color:var(--muted); text-align:center; min-width:7.5rem; }
+  #zoomButtons { display:flex; gap:.25rem; }
+  #zoomButtons .mini { border:1px solid var(--border); background:#fff; border-radius:.35rem; padding:.15rem .35rem; cursor:pointer; }
+  #scaleBar { width:100%; height:16px; position:relative; border:1px dashed var(--border); border-radius:.3rem; background:#fff; }
+  #scaleBarFill { position:absolute; top:0; left:0; height:100%; background:var(--accent); opacity:.2; border-right:2px solid var(--accent); }
+  #scaleBarText { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:.75rem; color:var(--muted); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="toolbar">
+    <button id="toolDraw"   class="btn" aria-pressed="true"  title="Piešti (D)">✏️</button>
+    <button id="toolPan"    class="btn" aria-pressed="false" title="Judėti (Space)">✋</button>
+    <button id="toolBucket" class="btn" aria-pressed="false" title="Užpildas (B)">🪣</button>
+
+    <button id="toolLine"   class="btn" aria-pressed="false" title="Linija (L)">📐</button>
+    <button id="toolRect"   class="btn" aria-pressed="false" title="Stačiakampis (R)">⬛</button>
+    <button id="toolCircle" class="btn" aria-pressed="false" title="Apskritimas (C)">⭕</button>
+    <button id="toolText"   class="btn" aria-pressed="false" title="Tekstas (T)">🅣</button>
+    <div id="textControls" style="display:none; align-items:center; gap:.35rem;">
+      <select id="fontFamily" class="btn" title="Šriftas">
+        <option value="system-ui">System</option>
+        <option value="Arial">Arial</option>
+        <option value="Inter">Inter</option>
+        <option value="Georgia">Georgia</option>
+        <option value="Times New Roman">Times New Roman</option>
+        <option value="Courier New">Courier New</option>
+        <option value="monospace">Monospace</option>
+      </select>
+      <input id="textSize" type="range" min="1" max="400" step="1" value="24" title="Teksto dydis (px)" class="btn" style="width:140px" />
+      <span id="textSizePx" class="btn" style="padding:.2rem .4rem; min-width:auto">24 px</span>
+    </div>
+
+    <button id="toolMeasure" class="btn" aria-pressed="false" title="Liniuotė / matavimas (K)">📏</button>
+    <button id="toolMark"    class="btn" aria-pressed="false" title="Pažymėti vietą (M)">📍</button>
+
+    <!-- NEW: Images -->
+    <button id="toolImage"   class="btn" aria-pressed="false" title="Paveikslėliai: redagavimas / įkėlimas (I)">🖼️</button>
+    <input  id="imagePicker" type="file" accept="image/*" style="display:none" />
+
+    <div class="spacer"></div>
+    <input  id="color" type="color" value="#000000" title="Spalva" class="btn" style="padding:.2rem; min-width:2.2rem" />
+    <input  id="size" type="range" min="1" max="60" step="1" value="6" title="Storis" class="btn" style="width:120px" />
+    <span id="sizePx" class="btn" style="padding:.2rem .4rem; min-width:auto">6 px</span>
+    <div class="spacer"></div>
+    <button id="undo" class="btn" title="Atgal">↩️</button>
+    <button id="reset" class="btn" title="Centruoti">⤢</button>
+    <button id="recStart"   class="btn" title="Pradėti įrašą (MP4)">⏺️</button>
+    <button id="recStopMp4" class="btn" title="Baigti ir išsaugoti MP4">⏹️</button>
+    <button id="save" class="btn" title="Išsaugoti projektą (.icv) – Ctrl+S">💾</button>
+    <button id="open" class="btn" title="Atidaryti projektą – Ctrl+O">📂</button>
+    <input id="openFile" type="file" accept=".icv,.json,application/json" style="display:none" />
+    <span id="status"></span>
+  </div>
+  <div id="stage"><canvas id="canvas"></canvas></div>
+  <aside id="marks">
+    <!-- Zoom panel -->
+    <div id="zoomBox">
+      <div id="zoomCol">
+        <input id="zoomRange" type="range" step="0.001" />
+        <div id="zoomButtons">
+          <button id="zoomOut" class="mini" title="Tolinti">−</button>
+          <button id="zoomIn"  class="mini" title="Artinti">+</button>
+        </div>
+      </div>
+      <div style="flex:1">
+        <div id="zoomLabel">1 px ≈ 1 m</div>
+        <div id="scaleBar">
+          <div id="scaleBarFill" style="width:50%"></div>
+          <div id="scaleBarText">—</div>
+        </div>
+      </div>
+    </div>
+
+    <h3>Žymos</h3>
+    <ul id="marksList"></ul>
+  </aside>
+</div>
+<script>
+(() => {
+  // ==== PHYSICS / UNITS ================================
+  const MIN_MPP = 1e-12;   // meters per pixel (1 pm)
+  const MAX_MPP = 1e3;     // meters per pixel (1 km)
+  const MIN_ZOOM = 1 / MAX_MPP; // 0.001
+  const MAX_ZOOM = 1 / MIN_MPP; // 1e9
+
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+
+  // UI refs
+  const toolDraw = document.getElementById('toolDraw');
+  const toolPan = document.getElementById('toolPan');
+  const toolBucket = document.getElementById('toolBucket');
+  const toolLine = document.getElementById('toolLine');
+  const toolRect = document.getElementById('toolRect');
+  const toolCircle = document.getElementById('toolCircle');
+  const toolMeasure = document.getElementById('toolMeasure');
+  const toolText = document.getElementById('toolText');
+  const textControls = document.getElementById('textControls');
+  const fontFamilyEl = document.getElementById('fontFamily');
+  const textSizeEl = document.getElementById('textSize');
+  const textSizePxEl = document.getElementById('textSizePx');
+  const toolMark = document.getElementById('toolMark');
+  const undoBtn = document.getElementById('undo');
+  const resetBtn = document.getElementById('reset');
+  const colorEl = document.getElementById('color');
+  const sizeEl = document.getElementById('size');
+  const sizePxEl = document.getElementById('sizePx');
+  const marksList = document.getElementById('marksList');
+  const stageEl = document.getElementById('stage');
+
+  // NEW: Images UI
+  const toolImage = document.getElementById('toolImage');
+  const imagePicker = document.getElementById('imagePicker');
+
+  // Save/Load UI
+  const saveBtn = document.getElementById('save');
+  const openBtn = document.getElementById('open');
+  const openFile = document.getElementById('openFile');
+
+  // Zoom UI refs
+  const zoomRange = document.getElementById('zoomRange');
+  const zoomLabel = document.getElementById('zoomLabel');
+  const zoomInBtn = document.getElementById('zoomIn');
+  const zoomOutBtn = document.getElementById('zoomOut');
+  const scaleBar = document.getElementById('scaleBar');
+  const scaleBarFill = document.getElementById('scaleBarFill');
+  const scaleBarText = document.getElementById('scaleBarText');
+
+  // ===== State =====
+  let deviceScale = 1;
+  let scale = 1; // screen px per world meter
+  let offset = {x:0, y:0}; // screen px offset
+  let currentColor = colorEl.value;
+  let brushSizeScreen = +sizeEl.value; // px on screen while drawing
+  let mode = 'draw';
+
+  const strokes = []; // {type, color, sizeWorld?, points:[], shape?, bbox:{minx,miny,maxx,maxy}, center}
+  const fills = [];   // {color, points:[], bbox}
+  const marks = [];
+
+  // Texts (vector-scaled)
+  const texts = [];   // {id, type:'text', text, x,y, color, fontFamily, sizeWorld}
+  let selectedTextId = null;
+  let defaultFontFamily = 'system-ui';
+  let defaultTextSizeWorld = 24; // init later to brushSizeScreen/scale
+
+  // NEW: Images (bitmap in world coords)
+  // item: {id, type:'image', x,y,w,h, src, img}
+  const images = [];
+  let selectedImageId = null;
+
+  // --- Measure (single overlay) ---
+  let measure = null; // {a:{x,y}, b:{x,y}}
+
+  // ===== Zoom slider (log scale) =====
+  const LOG_MIN = Math.log10(MIN_ZOOM), LOG_MAX = Math.log10(MAX_ZOOM);
+  zoomRange.min = String(LOG_MIN);
+  zoomRange.max = String(LOG_MAX);
+  zoomRange.value = '0'; // log10(1)
+
+  // ===== Text helpers =====
+  function screenFontPx(sizeWorld){ return sizeWorld * scale; } // world → px, no clamp
+  function getSelectedText(){ return texts.find(t=>t.id===selectedTextId) || null; }
+  function setSelectedText(t){ selectedTextId = t ? t.id : null; requestRender(); updateTextUI(); }
+  function isTextMode(){ return mode==='text'; }
+  function showTextControls(show){ textControls.style.display = show ? 'flex' : 'none'; }
+  function updateTextUI(){
+    const sel=getSelectedText();
+    fontFamilyEl.value = (sel?.fontFamily)||defaultFontFamily;
+    const w = (sel?.sizeWorld)||defaultTextSizeWorld;
+    const px = Math.max(1, Math.round(w*scale));
+    if(textSizeEl){ textSizeEl.value = String(px); }
+    if(textSizePxEl){ textSizePxEl.textContent = `${px} px`; }
+  }
+  function computeTextBBoxScreen(t){
+    const px = screenFontPx(t.sizeWorld||defaultTextSizeWorld);
+    ctx.save(); ctx.font = `${px}px ${t.fontFamily||'system-ui'}`;
+    const m=ctx.measureText(t.text); const w=m.width; const asc=(m.actualBoundingBoxAscent||px*0.8); const desc=(m.actualBoundingBoxDescent||px*0.2);
+    ctx.restore();
+    const s=worldToScreen({x:t.x,y:t.y});
+    return {x:s.x, y:s.y-asc, w, h:asc+desc};
+  }
+  function textHitTestScreen(pS){
+    for(let i=texts.length-1;i>=0;i--){ const t=texts[i]; const b=computeTextBBoxScreen(t); if(pS.x>=b.x&&pS.x<=b.x+b.w&&pS.y>=b.y&&pS.y<=b.y+b.h) return t; }
+    return null;
+  }
+
+  // ===== Image helpers =====
+  function getSelectedImage(){ return images.find(im=>im.id===selectedImageId) || null; }
+  function setSelectedImage(im){ selectedImageId = im ? im.id : null; requestRender(); }
+  function computeImageBBoxWorld(im){ return {minx:Math.min(im.x, im.x+im.w), miny:Math.min(im.y, im.y+im.h), maxx:Math.max(im.x, im.x+im.w), maxy:Math.max(im.y, im.y+im.h)}; }
+  function computeImageBBoxScreen(im){
+    const tl = worldToScreen({x:im.x, y:im.y});
+    const br = worldToScreen({x:im.x+im.w, y:im.y+im.h});
+    const x = Math.min(tl.x, br.x), y = Math.min(tl.y, br.y);
+    const w = Math.abs(br.x - tl.x), h = Math.abs(br.y - tl.y);
+    return {x,y,w,h};
+  }
+  function imageHitTestScreen(pS){
+    for(let i=images.length-1;i>=0;i--){
+      const im=images[i]; const b=computeImageBBoxScreen(im);
+      if(pS.x>=b.x && pS.x<=b.x+b.w && pS.y>=b.y && pS.y<=b.y+b.h) return im;
+    }
+    return null;
+  }
+  function imageHandleRects(im){
+    const b=computeImageBBoxScreen(im); const s=8; // px size
+    return {
+      nw:{x:b.x-s/2,y:b.y-s/2,w:s,h:s},
+      ne:{x:b.x+b.w-s/2,y:b.y-s/2,w:s,h:s},
+      se:{x:b.x+b.w-s/2,y:b.y+b.h-s/2,w:s,h:s},
+      sw:{x:b.x-s/2,y:b.y+b.h-s/2,w:s,h:s}
+    };
+  }
+  function imageHandleHitTest(pS, im){
+    const hs=imageHandleRects(im);
+    for(const k of ['nw','ne','se','sw']){
+      const r=hs[k]; if(pS.x>=r.x&&pS.x<=r.x+r.w&&pS.y>=r.y&&pS.y<=r.y+r.h) return k;
+    }
+    return null;
+  }
+
+  // ===== Geometry helpers =====
+  const screenToWorld = p => ({ x:(p.x - offset.x)/scale, y:(p.y - offset.y)/scale });
+  const worldToScreen = p => ({ x:p.x*scale + offset.x, y:p.y*scale + offset.y });
+
+  const expandBBoxPt = (bb, p) => {
+    if(!bb){ return {minx:p.x, miny:p.y, maxx:p.x, maxy:p.y}; }
+    if(p.x<bb.minx) bb.minx=p.x; if(p.x>bb.maxx) bb.maxx=p.x;
+    if(p.y<bb.miny) bb.miny=p.y; if(p.y>bb.maxy) bb.maxy=p.y;
+    return bb;
+  };
+  const bboxIntersects = (a,b)=> !(a.maxx<b.minx || a.minx>b.maxx || a.maxy<b.miny || a.miny>b.maxy);
+
+  function visibleWorldBBox(paddingPx=0){
+    const padW = paddingPx/scale;
+    const x1 = (-offset.x)/scale - padW;
+    const y1 = (-offset.y)/scale - padW;
+    const x2 = (canvas.clientWidth - offset.x)/scale + padW;
+    const y2 = (canvas.clientHeight - offset.y)/scale + padW;
+    return {minx:Math.min(x1,x2), miny:Math.min(y1,y2), maxx:Math.max(x1,x2), maxy:Math.max(y1,y2)};
+  }
+
+  // ===== Units / labels =====
+  function worldMetersPerPixel(){ return 1/scale; }
+  function chooseUnit(m){
+    const units=[{sym:'km',m:1e3},{sym:'m',m:1},{sym:'cm',m:1e-2},{sym:'mm',m:1e-3},{sym:'µm',m:1e-6},{sym:'nm',m:1e-9},{sym:'pm',m:1e-12}];
+    let best=units[0], bestScore=Infinity;
+    for(const u of units){
+      const v=m/u.m; const score=Math.abs(Math.log10(v));
+      if(v>=1 && v<1000){ best=u; break; }
+      if(score<bestScore){ bestScore=score; best=u; }
+    }
+    return best;
+  }
+  function fmt(v){ if(v>=100) return v.toFixed(0); if(v>=10) return v.toFixed(1); if(v>=1) return v.toFixed(2); if(v>=0.1) return v.toFixed(3); return v.toFixed(4); }
+
+  function updateZoomUI(){
+    zoomRange.value = String(Math.log10(scale));
+    const mpp = worldMetersPerPixel();
+    const u = chooseUnit(mpp);
+    zoomLabel.textContent = `1 px ≈ ${fmt(mpp/u.m)} ${u.sym}`;
+
+    const boxPx = scaleBar.clientWidth || 1;
+    const targetPx = Math.max(0.35*boxPx, Math.min(0.85*boxPx, 0.6*boxPx));
+    const lengthMeters = targetPx * mpp;
+    const nice=(x)=>{ const pow=10**Math.floor(Math.log10(x)); const n=x/pow; const step = n<1.5?1:n<3.5?2:n<7.5?5:10; return step*pow; };
+    const Lm = nice(lengthMeters);
+    const px = Math.max(2, Math.min(boxPx, Lm / mpp));
+    scaleBarFill.style.width = `${px}px`;
+    const u2 = chooseUnit(Lm);
+    scaleBarText.textContent = `${fmt(Lm/u2.m)} ${u2.sym}`;
+  }
+
+  function keepCenterWhenZoom(nextScale){
+    nextScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, nextScale));
+    const cS = { x: canvas.clientWidth/2, y: canvas.clientHeight/2 };
+    const wC = screenToWorld(cS);
+    scale = nextScale;
+    offset.x = cS.x - wC.x * scale;
+    offset.y = cS.y - wC.y * scale;
+    requestRender();
+    updateZoomUI();
+  }
+
+  zoomRange.addEventListener('input', () => keepCenterWhenZoom(10**parseFloat(zoomRange.value||'0')));
+  zoomInBtn.addEventListener('click', ()=> keepCenterWhenZoom(scale * 1.2));
+  zoomOutBtn.addEventListener('click',()=> keepCenterWhenZoom(scale / 1.2));
+
+  // ===== History =====
+  const history = [];
+  function snapshot(){
+    history.push({
+      strokes: JSON.parse(JSON.stringify(strokes)),
+      fills: JSON.parse(JSON.stringify(fills)),
+      marks: JSON.parse(JSON.stringify(marks)),
+      texts: JSON.parse(JSON.stringify(texts)),
+      selectedTextId,
+      images: images.map(im=>({id:im.id,x:im.x,y:im.y,w:im.w,h:im.h,src:im.src})),
+      selectedImageId,
+      measure: measure ? {a:{...measure.a}, b:{...measure.b}} : null,
+      scale, offset: {...offset}
+    });
+    if(history.length>150) history.shift();
+  }
+  function restoreImages(list){
+    images.splice(0, images.length);
+    for(const im of (list||[])){
+      const img = new Image();
+      img.onload = ()=> requestRender();
+      img.src = im.src;
+      images.push({id:im.id,type:'image',x:im.x,y:im.y,w:im.w,h:im.h,src:im.src,img});
+    }
+  }
+  function undo(){
+    const s=history.pop(); if(!s) return;
+    strokes.splice(0,strokes.length, ...s.strokes);
+    fills.splice(0,fills.length, ...s.fills);
+    marks.splice(0,marks.length, ...s.marks);
+    texts.splice(0,texts.length, ...(s.texts||[]));
+    selectedTextId = s.selectedTextId ?? null;
+    restoreImages(s.images||[]);
+    selectedImageId = s.selectedImageId ?? null;
+    measure = s.measure ? {a:{...s.measure.a}, b:{...s.measure.b}} : null;
+         scale = s.scale; offset = s.offset;
+     renderMarks(); requestRender(); updateZoomUI();
+  }
+
+  // ===== Resize & DPI =====
+  function resizeCanvas(){
+    const dpr = window.devicePixelRatio || 1; deviceScale = dpr;
+    const w = canvas.clientWidth = stageEl.clientWidth;
+    const h = canvas.clientHeight = stageEl.clientHeight;
+    canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0); // draw in *screen px*
+    requestRender(); updateZoomUI();
+  }
+  new ResizeObserver(resizeCanvas).observe(stageEl); window.addEventListener('resize', resizeCanvas);
+
+  // ===== Input helpers =====
+  function setMode(m){ 
+    mode=m; 
+    for(const el of [toolDraw,toolPan,toolBucket,toolLine,toolRect,toolCircle,toolMeasure,toolMark,toolText,toolImage]){
+      el.setAttribute('aria-pressed',(el===toolMap[m]));
+    }
+    showTextControls(m==='text'); updateTextUI(); 
+    requestRender();
+  }
+  const toolMap = { draw:toolDraw, pan:toolPan, bucket:toolBucket, line:toolLine, rect:toolRect, circle:toolCircle, measure:toolMeasure, mark:toolMark, text:toolText, image:toolImage };
+  const canvasPos = e => { const r=canvas.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
+
+  // ===== Rendering (screen-space, with culling & simplification) =====
+  let needsRender=true; let lastRenderTime=0; let isRecording=false;
+  const requestRender=()=>{ needsRender=true; };
+
+  function pathStrokeScreen(points, simplifyPx){
+    if(points.length===0) return;
+    const sp=[]; let last=null;
+    for(const p of points){
+      const s = worldToScreen(p);
+      if(!last || Math.hypot(s.x-last.x, s.y-last.y)>=simplifyPx){ sp.push(s); last=s; }
+    }
+    if(sp.length===0) return;
+    if(sp.length===1){ ctx.moveTo(sp[0].x,sp[0].y); ctx.lineTo(sp[0].x+0.001, sp[0].y); return; }
+    ctx.moveTo(sp[0].x, sp[0].y);
+    for(let i=1;i<sp.length-1;i++){
+      const c = sp[i]; const n = sp[i+1];
+      const mx = (c.x+n.x)/2, my=(c.y+n.y)/2;
+      ctx.quadraticCurveTo(c.x,c.y,mx,my);
+    }
+    ctx.lineTo(sp[sp.length-1].x, sp[sp.length-1].y);
+  }
+
+  function drawMeasureOverlay(m){
+    if(!m) return;
+    const aS = worldToScreen(m.a), bS = worldToScreen(m.b);
+    ctx.save();
+    ctx.setLineDash([6,4]);
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.strokeStyle = '#0b1220';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(aS.x,aS.y); ctx.lineTo(bS.x,bS.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#0b1220';
+    ctx.beginPath(); ctx.arc(aS.x,aS.y,3,0,Math.PI*2); ctx.arc(bS.x,bS.y,3,0,Math.PI*2); ctx.fill();
+
+    const dx = bS.x-aS.x, dy=bS.y-aS.y; const lenS = Math.hypot(dx,dy) || 1;
+    const midX = (aS.x+bS.x)/2, midY=(aS.y+bS.y)/2;
+    const offX = -dy/lenS * 8, offY = dx/lenS * 8;
+
+    const dw = Math.hypot(m.b.x - m.a.x, m.b.y - m.a.y);
+    const u = chooseUnit(dw);
+    const text = `${fmt(dw/u.m)} ${u.sym}`;
+
+    ctx.font = '12px system-ui';
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+    const padX = 6, padY = 3; const tw = ctx.measureText(text).width;
+    const x = midX + offX, y = midY + offY;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    const w = Math.max(20, tw + padX*2), h = 18;
+    const r = 9; const x0 = x - w/2, y0 = y - h/2;
+    ctx.beginPath();
+    ctx.moveTo(x0+r, y0);
+    ctx.arcTo(x0+w, y0,   x0+w, y0+h, r);
+    ctx.arcTo(x0+w, y0+h, x0,   y0+h, r);
+    ctx.arcTo(x0,   y0+h, x0,   y0,   r);
+    ctx.arcTo(x0,   y0,   x0+w, y0,   r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(11,18,32,0.15)'; ctx.lineWidth = 1; ctx.stroke();
+
+    ctx.fillStyle = '#0b1220';
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  function render(){
+    if(!needsRender) return;
+    const now = performance.now(); if(now - lastRenderTime < 16) return; // ~60fps
+    lastRenderTime = now; needsRender=false;
+
+    ctx.setTransform(deviceScale,0,0,deviceScale,0,0);
+    if(isRecording){
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0,0,canvas.width/deviceScale, canvas.height/deviceScale);
+    } else {
+      ctx.clearRect(0,0,canvas.width/deviceScale, canvas.height/deviceScale);
+    }
+
+    const vis = visibleWorldBBox(8); // pad 8px
+
+    // IMAGES (draw first, beneath vector content)
+    for(const im of images){
+      const bb=computeImageBBoxWorld(im);
+      if(!bb || bboxIntersects(bb, vis)){
+        const s = computeImageBBoxScreen(im);
+        if(im.img && im.img.complete){ ctx.drawImage(im.img, s.x, s.y, s.w, s.h); }
+      }
+    }
+
+    // FILLS
+    for(const f of fills){
+      if(!f.bbox || bboxIntersects(f.bbox, vis)){
+        ctx.save();
+        ctx.fillStyle=f.color;
+        ctx.beginPath();
+        if(f.points.length){
+          const s0 = worldToScreen(f.points[0]); ctx.moveTo(s0.x, s0.y);
+          for(let i=1;i<f.points.length;i++){ const s=worldToScreen(f.points[i]); ctx.lineTo(s.x,s.y); }
+          ctx.closePath();
+          ctx.fill('evenodd');
+        }
+        ctx.restore();
+      }
+    }
+
+    // STROKES & SHAPES
+    const simplifyPx = (scale<0.01) ? 2 : 0.75; 
+    for(const s of strokes){
+      if(!s.bbox){
+        if(s.type==='stroke'){
+          let bb=null; for(const p of s.points) bb=expandBBoxPt(bb,p); s.bbox=bb||{minx:0,miny:0,maxx:0,maxy:0};
+        } else if(s.type==='line'){
+          const {x1,y1,x2,y2}=s.shape; s.bbox={minx:Math.min(x1,x2), miny:Math.min(y1,y2), maxx:Math.max(x1,x2), maxy:Math.max(y1,y2)};
+        } else if(s.type==='rect'){
+          const {x,y,w,h}=s.shape; s.bbox={minx:Math.min(x,x+w),miny:Math.min(y,y+h),maxx:Math.max(x,x+w),maxy:Math.max(y,y+h)};
+        } else if(s.type==='circle'){
+          const {cx,cy,r}=s.shape; s.bbox={minx:cx-r,miny:cy-r,maxx:cx+r,maxy:cy+r};
+        }
+      }
+      const lwPx = (s.sizeWorld!=null ? s.sizeWorld*scale : brushSizeScreen);
+      const padW = lwPx/scale;
+      const bb = s.bbox ? {minx:s.bbox.minx-padW, miny:s.bbox.miny-padW, maxx:s.bbox.maxx+padW, maxy:s.bbox.maxy+padW} : vis;
+      if(!bboxIntersects(bb, vis)) continue;
+
+      ctx.save();
+      ctx.lineCap='round'; ctx.lineJoin='round';
+      ctx.strokeStyle=s.color; ctx.lineWidth = lwPx; 
+      if(s.type==='stroke'){
+        ctx.beginPath();
+        pathStrokeScreen(s.points, simplifyPx);
+        ctx.stroke();
+      } else if(s.type==='line'){
+        const {x1,y1,x2,y2}=s.shape; const a=worldToScreen({x:x1,y:y1}); const b=worldToScreen({x:x2,y:y2});
+        ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      } else if(s.type==='rect'){
+        const {x,y,w,h}=s.shape; const a=worldToScreen({x,y}); const b=worldToScreen({x:x+w,y:y+h});
+        ctx.strokeRect(a.x,a.y, b.x-a.x, b.y-a.y);
+      } else if(s.type==='circle'){
+        const {cx,cy,r}=s.shape; const c=worldToScreen({x:cx,y:cy});
+        ctx.beginPath(); ctx.arc(c.x,c.y, r*scale, 0, Math.PI*2); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // TEXTS
+    for(const t of texts){
+      const px = screenFontPx(t.sizeWorld||defaultTextSizeWorld);
+      ctx.save();
+      ctx.font = `${px}px ${t.fontFamily||'system-ui'}`;
+      ctx.fillStyle = t.color || '#000';
+      const s = worldToScreen({x:t.x,y:t.y});
+      ctx.textBaseline = 'alphabetic'; ctx.textAlign='left';
+      ctx.fillText(t.text, s.x, s.y);
+      if(selectedTextId===t.id){
+        const b=computeTextBBoxScreen(t);
+        ctx.setLineDash([5,3]); ctx.strokeStyle='rgba(59,130,246,0.9)'; ctx.lineWidth=1; ctx.strokeRect(b.x,b.y,b.w,b.h);
+      }
+      ctx.restore();
+    }
+
+    // IMAGE selection overlay (draw on top)
+    if(mode==='image'){
+      const selIm = getSelectedImage();
+      if(selIm){
+        const b=computeImageBBoxScreen(selIm);
+        ctx.save();
+        ctx.setLineDash([5,3]); ctx.strokeStyle='rgba(59,130,246,0.9)'; ctx.lineWidth=1; ctx.strokeRect(b.x,b.y,b.w,b.h);
+        ctx.setLineDash([]);
+        const hs=imageHandleRects(selIm);
+        ctx.fillStyle='rgba(59,130,246,0.95)';
+        for(const k of ['nw','ne','se','sw']){ const r=hs[k]; ctx.fillRect(r.x, r.y, r.w, r.h); }
+        ctx.restore();
+      }
+    }
+
+    // MEASURE OVERLAY
+    drawMeasureOverlay(measure);
+
+    // MARKS
+    for(const m of marks){ const s=worldToScreen(m); ctx.fillStyle='#e11'; ctx.beginPath(); ctx.arc(s.x,s.y,3,0,Math.PI*2); ctx.fill(); }
+  }
+  (function loop(){ render(); requestAnimationFrame(loop); })();
+
+  // ===== Drawing state =====
+  let drawing=null; let mousePos=null; let isMouseDown=false;
+
+  // ===== Pointer/gestures =====
+  const active=new Map(); let pinch=null, panPrev=null;
+
+  canvas.addEventListener('pointerdown', e=>{
+    canvas.setPointerCapture(e.pointerId);
+    const pS = canvasPos(e); active.set(e.pointerId,{...pS,type:e.pointerType});
+    const touchLike = (e.pointerType==='touch');
+    isMouseDown = true;
+
+    if(active.size===2){
+      const pts=[...active.values()]; const dx=pts[0].x-pts[1].x, dy=pts[0].y-pts[1].y; const d0=Math.hypot(dx,dy);
+      const mid={x:(pts[0].x+pts[1].x)/2,y:(pts[0].y+pts[1].y)/2};
+      pinch={startDist:Math.max(1,d0), startScale:scale, midWorld:screenToWorld(mid)}; return;
+    }
+
+    
+if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; return; }
+    if(e.pointerType==='mouse' && e.button!==0) return;
+
+    const pW = screenToWorld(pS);
+
+    // IMAGES mode
+    if(mode==='image'){
+      const hit = imageHitTestScreen(pS);
+      if(hit){
+        setSelectedImage(hit);
+        snapshot();
+        const handle = imageHandleHitTest(pS, hit);
+        if(handle){
+          // start resize from opposite anchor
+          const ax = (handle==='nw'||handle==='sw') ? (hit.x+hit.w) : hit.x;
+          const ay = (handle==='nw'||handle==='ne') ? (hit.y+hit.h) : hit.y;
+          drawing={type:'imageresize', targetId:hit.id, handle, anchor:{x:ax,y:ay}, ratio: Math.abs(hit.h/(hit.w||1e-9))};
+        } else {
+          drawing={type:'imagedrag', targetId:hit.id, dx:pW.x-hit.x, dy:pW.y-hit.y};
+        }
+        requestRender();
+        return;
+      } else {
+        setSelectedImage(null);
+        requestRender();
+        return;
+      }
+    }
+
+    // TEXT
+    if(mode==='text'){
+      const hit = textHitTestScreen(pS);
+      if(hit){
+        setSelectedText(hit);
+        drawing={type:'textdrag', targetId:hit.id, dx:pW.x-hit.x, dy:pW.y-hit.y};
+        requestRender();
+        return;
+      } else {
+        const str = prompt('Įvesk tekstą:');
+        if(str && str.trim()){
+          snapshot();
+          const sizeWorld = (getSelectedText()?.sizeWorld) || (defaultTextSizeWorld || (brushSizeScreen/scale));
+          const family = (getSelectedText()?.fontFamily) || defaultFontFamily;
+          const t = {id:Date.now(), type:'text', text:str.trim(), x:pW.x, y:pW.y, color:currentColor, fontFamily:family, sizeWorld:sizeWorld};
+          texts.push(t); setSelectedText(t); requestRender();
+        }
+        return;
+      }
+    }
+
+    if(mode==='draw'){
+      snapshot(); const sw=brushSizeScreen/scale; 
+      drawing={type:'stroke',color:currentColor,sizeWorld:sw,points:[pW],center:{...pW}, bbox:expandBBoxPt(null,pW)};
+      strokes.push(drawing); requestRender(); return;
+    }
+    if(mode==='bucket'){
+      snapshot();
+      for(let i=strokes.length-1;i>=0;i--){
+        const s=strokes[i];
+        let isInside = false;
+        if(s.type === 'rect'){
+          const r=s.shape; isInside = (pW.x>=r.x && pW.x<=r.x+r.w && pW.y>=r.y && pW.y<=r.y+r.h);
+        } else if(s.type === 'circle'){
+          const c=s.shape; const dx=pW.x-c.cx, dy=pW.y-c.cy; isInside = dx*dx+dy*dy <= c.r*c.r;
+        } else if(s.type==='stroke'){
+          let inside=false; const poly=s.points; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+            const a=poly[i], b=poly[j]; const inter=((a.y>pW.y)!==(b.y>pW.y)) && (pW.x<(b.x-a.x)*(pW.y-a.y)/((b.y-a.y)||1e-9)+a.x); if(inter) inside=!inside;
+          } isInside=inside;
+        }
+        if(isInside){
+          if(s.type==='rect'){
+            const {x,y,w,h}=s.shape; const pts=[{x,y},{x:x+w,y},{x:x+w,y:y+h},{x,y:y+h}]; fills.push({color: currentColor, points: pts, bbox:{minx:x,miny:y,maxx:x+w,maxy:y+h}});
+          } else if(s.type==='circle'){
+            const {cx,cy,r}=s.shape; const pts=[]; const seg=40; for(let j=0;j<seg;j++){ const a=2*Math.PI*j/seg; pts.push({x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r}); } fills.push({color: currentColor, points: pts, bbox:{minx:cx-r,miny:cy-r,maxx:cx+r,maxy:cy+r}});
+          } else if(s.type==='stroke'){
+            fills.push({color: currentColor, points: s.points.slice(), bbox: s.bbox});
+          }
+          requestRender();
+          break;
+        }
+      }
+      return;
+    }
+
+    if(mode==='line' || mode==='rect' || mode==='circle'){
+      snapshot(); const sw=brushSizeScreen/scale;
+      if(mode==='line')   drawing={type:'line',   color:currentColor,sizeWorld:sw,points:[pW],center:{...pW},shape:{x1:pW.x,y1:pW.y,x2:pW.x,y2:pW.y}};
+      if(mode==='rect')   drawing={type:'rect',   color:currentColor,sizeWorld:sw,points:[pW],center:{...pW},shape:{x:pW.x,y:pW.y,w:0,h:0}};
+      if(mode==='circle') drawing={type:'circle', color:currentColor,sizeWorld:sw,points:[pW],center:{...pW},shape:{cx:pW.x,cy:pW.y,r:0}};
+      strokes.push(drawing); requestRender(); return;
+    }
+    if(mode==='measure'){
+      if(!measure || measure.locked){
+        snapshot();
+        measure = { a:{...pW}, b:{...pW}, locked:false };
+        requestRender();
+      } else if(!measure.locked){
+        measure.b = {...pW};
+        measure.locked = true;
+        requestRender();
+      }
+      return;
+    }
+    if(mode==='mark'){
+      snapshot(); const id=Date.now(); marks.push({id,name:'Mark '+(marks.length+1),x:pW.x,y:pW.y,scale}); renderMarks(); requestRender(); return;
+    }
+  }, {passive:false});
+
+  canvas.addEventListener('pointermove', e=>{
+    const pS=canvasPos(e); 
+    mousePos = pS;
+    if(active.has(e.pointerId)) active.set(e.pointerId,{...pS,type:e.pointerType});
+
+    if(active.size===2 && pinch){
+      const pts=[...active.values()]; const dx=pts[0].x-pts[1].x, dy=pts[0].y-pts[1].y; const d1=Math.hypot(dx,dy);
+      let next=pinch.startScale*(d1/pinch.startDist); next=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,next));
+      const mid={x:(pts[0].x+pts[1].x)/2,y:(pts[0].y+pts[1].y)/2}; const w=pinch.midWorld;
+      offset.x = mid.x - w.x*next; offset.y = mid.y - w.y*next; scale=next; requestRender(); updateZoomUI(); return;
+    }
+
+    if(panPrev){ offset.x += (pS.x - panPrev.x); offset.y += (pS.y - panPrev.y); panPrev=pS; requestRender(); return; }
+
+    const pW=screenToWorld(pS);
+
+    if(drawing){
+      if(drawing.type==='textdrag'){
+        const t=texts.find(tt=>tt.id===drawing.targetId);
+        if(t){ t.x=pW.x - drawing.dx; t.y=pW.y - drawing.dy; requestRender(); }
+        return;
+      }
+      if(drawing.type==='imagedrag'){
+        const im=images.find(it=>it.id===drawing.targetId);
+        if(im){ im.x=pW.x - drawing.dx; im.y=pW.y - drawing.dy; requestRender(); }
+        return;
+      }
+      if(drawing.type==='imageresize'){
+        const im=images.find(it=>it.id===drawing.targetId);
+        if(im){
+          const ax=drawing.anchor.x, ay=drawing.anchor.y; const r=drawing.ratio||1;
+          const dx=pW.x-ax, dy=pW.y-ay;
+          const signX = (drawing.handle==='ne'||drawing.handle==='se') ? 1 : -1;
+          const signY = (drawing.handle==='sw'||drawing.handle==='se') ? 1 : -1;
+          const candW = Math.abs(dx); const candW2 = Math.abs(dy)/r; const W = Math.max(1e-6, Math.max(candW, candW2));
+          const H = W * r;
+          const x1 = ax; const y1 = ay;
+          const x2 = ax + signX * W; const y2 = ay + signY * H;
+          im.x = Math.min(x1,x2); im.y = Math.min(y1,y2); im.w = Math.abs(x2-x1); im.h = Math.abs(y2-y1);
+          requestRender();
+        }
+        return;
+      }
+      if(drawing.type==='stroke'){
+        const last = drawing.points[drawing.points.length-1];
+        const lastS = last ? worldToScreen(last) : null;
+        const minStepPx = 0.6;
+        const dS = lastS ? Math.hypot(pS.x - lastS.x, pS.y - lastS.y) : Infinity;
+        if (!last || dS >= minStepPx) {
+          const steps = !lastS ? 1 : Math.min(32, Math.max(1, Math.floor(dS / minStepPx)));
+          for (let i = 1; i <= steps; i++) {
+            const t = !lastS ? 1 : (i / steps);
+            const sx = !lastS ? pS.x : lastS.x + (pS.x - lastS.x) * t;
+            const sy = !lastS ? pS.y : lastS.y + (pS.y - lastS.y) * t;
+            const wpt = screenToWorld({ x: sx, y: sy });
+            drawing.points.push(wpt);
+            drawing.bbox = expandBBoxPt(drawing.bbox, wpt);
+          }
+          let sx=0,sy=0; for(const p of drawing.points){sx+=p.x;sy+=p.y}
+          drawing.center={x:sx/drawing.points.length,y:sy/drawing.points.length};
+          requestRender();
+        }
+        return;
+      }
+      if(drawing.type==='line'){ drawing.shape.x2=pW.x; drawing.shape.y2=pW.y; drawing.center={x:(drawing.shape.x1+drawing.shape.x2)/2, y:(drawing.shape.y1+drawing.shape.y2)/2}; drawing.bbox={minx:Math.min(drawing.shape.x1,pW.x),miny:Math.min(drawing.shape.y1,pW.y),maxx:Math.max(drawing.shape.x1,pW.x),maxy:Math.max(drawing.shape.y1,pW.y)}; requestRender(); return; }
+      if(drawing.type==='rect'){ drawing.shape.w=pW.x-drawing.shape.x; drawing.shape.h=pW.y-drawing.shape.y; drawing.center={x:drawing.shape.x+drawing.shape.w/2,y:drawing.shape.y+drawing.shape.h/2}; const {x,y,w,h}=drawing.shape; drawing.bbox={minx:Math.min(x,x+w),miny:Math.min(y,y+h),maxx:Math.max(x,x+w),maxy:Math.max(y,y+h)}; requestRender(); return; }
+      if(drawing.type==='circle'){ const dx=pW.x-drawing.shape.cx, dy=pW.y-drawing.shape.cy; drawing.shape.r=Math.hypot(dx,dy); drawing.center={x:drawing.shape.cx,y:drawing.shape.cy}; const {cx,cy,r}=drawing.shape; drawing.bbox={minx:cx-r,miny:cy-r,maxx:cx+r,maxy:cy+r}; requestRender(); return; }
+    }
+
+    if(mode==='measure' && measure && !measure.locked){ measure.b = {...pW}; requestRender(); return; }
+  }, {passive:false});
+
+  canvas.addEventListener('pointerup',   e=>{ active.delete(e.pointerId); if(active.size<2) pinch=null; if(drawing && (drawing.type==='textdrag'||drawing.type==='imagedrag'||drawing.type==='imageresize')){ snapshot(); } panPrev=null; drawing=null; isMouseDown=false; canvas.style.cursor=''; });
+  canvas.addEventListener('pointercancel', e=>{ active.delete(e.pointerId); if(active.size<2) pinch=null; panPrev=null; drawing=null; isMouseDown=false; canvas.style.cursor=''; });
+
+  // Wheel zoom
+  canvas.addEventListener('wheel', e=>{
+    e.preventDefault();
+    const p=canvasPos(e), before=screenToWorld(p), k=Math.exp(-e.deltaY*0.001);
+    const next=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,scale*k));
+    const after={x:before.x*next+offset.x,y:before.y*next+offset.y};
+    offset.x+=p.x-after.x; offset.y+=p.y-after.y; scale=next; requestRender(); updateZoomUI(); updateTextUI();
+  }, {passive:false});
+
+  // Drag & drop images
+  canvas.addEventListener('dragover', e=>{ e.preventDefault(); });
+  canvas.addEventListener('drop', e=>{
+    e.preventDefault();
+    const files = e.dataTransfer?.files; if(!files || !files.length) return;
+    const file = files[0]; if(!file.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(file); const img = new Image();
+    img.onload = ()=>{
+      snapshot();
+      const defaultScreenW = Math.min(400, canvas.clientWidth*0.5);
+      const wWorld= defaultScreenW / scale;
+      const hWorld= wWorld * (img.naturalHeight/(img.naturalWidth||1));
+      const c = {x:canvas.clientWidth/2,y:canvas.clientHeight/2};
+      const centerW = screenToWorld(c);
+      const im = {id:Date.now(), type:'image', x:centerW.x - wWorld/2, y:centerW.y - hWorld/2, w:wWorld, h:hWorld, src:url, img};
+      images.push(im); setSelectedImage(im); setMode('image'); requestRender();
+    };
+    img.src=url; 
+  });
+
+  // UI / tools
+  toolDraw.onclick = ()=> setMode('draw');
+  toolPan.onclick = ()=> setMode('pan');
+  toolBucket.onclick = ()=> setMode('bucket');
+  toolLine.onclick = ()=> setMode('line');
+  toolRect.onclick = ()=> setMode('rect');
+  toolCircle.onclick = ()=> setMode('circle');
+  toolMeasure.onclick = ()=> setMode('measure');
+  toolMark.onclick = ()=> setMode('mark');
+  toolText.onclick = ()=> setMode('text');
+  toolImage.onclick = ()=> {
+  if(mode!=='image') { setMode('image'); }
+  else { imagePicker.click(); }
+};
+
+  // Image picker handler
+  imagePicker.onchange = (e)=>{
+    const f = e.target.files?.[0]; if(!f) return; if(!f.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(f); const img = new Image();
+    img.onload = ()=>{
+      snapshot();
+      const defaultScreenW = Math.min(400, canvas.clientWidth*0.5);
+      const wWorld= defaultScreenW / scale;
+      const hWorld= wWorld * (img.naturalHeight/(img.naturalWidth||1));
+      const c = {x:canvas.clientWidth/2,y:canvas.clientHeight/2};
+      const centerW = screenToWorld(c);
+      const im = {id:Date.now(), type:'image', x:centerW.x - wWorld/2, y:centerW.y - hWorld/2, w:wWorld, h:hWorld, src:url, img};
+      images.push(im); setSelectedImage(im); setMode('image'); requestRender();
+    };
+    img.src=url; imagePicker.value='';
+  };
+  
+  // Text UI handlers
+  fontFamilyEl.oninput = ()=>{ const sel=getSelectedText(); if(sel){ sel.fontFamily = fontFamilyEl.value; } defaultFontFamily = fontFamilyEl.value; requestRender(); };
+  textSizeEl.oninput = ()=>{ const px = Math.max(+textSizeEl.value||1, 1); textSizePxEl.textContent = `${px} px`; const w = px/scale; const sel=getSelectedText(); if(sel){ sel.sizeWorld = w; } else { defaultTextSizeWorld = w; } requestRender(); };
+
+  undoBtn.onclick = ()=> undo();
+  resetBtn.onclick = ()=> { keepCenterWhenZoom(1); offset.x=canvas.clientWidth/2; offset.y=canvas.clientHeight/2; requestRender(); };
+  colorEl.oninput = ()=> { currentColor=colorEl.value; const sel=getSelectedText(); if(isTextMode() && sel){ sel.color=currentColor; requestRender(); } };
+  sizeEl.oninput = ()=> { brushSizeScreen = +sizeEl.value; sizePxEl.textContent = `${brushSizeScreen} px`; };
+
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Space'){ setMode('pan'); }
+    const k=e.key.toLowerCase();
+    if(k==='d') setMode('draw'); if(k==='b') setMode('bucket'); if(k==='l') setMode('line'); if(k==='r') setMode('rect'); if(k==='c') setMode('circle'); if(k==='k') setMode('measure'); if(k==='m') setMode('mark'); if(k==='t') setMode('text'); if(k==='i') setMode('image');
+    if(e.key==='0'){ keepCenterWhenZoom(1); offset.x=canvas.clientWidth/2; offset.y=canvas.clientHeight/2; requestRender(); }
+    if((e.ctrlKey||e.metaKey) && k==='z'){ e.preventDefault(); undo(); }
+    if((e.ctrlKey||e.metaKey) && (k==='+'||e.key==='+')){ keepCenterWhenZoom(scale*1.2); }
+    if((e.ctrlKey||e.metaKey) && (k==='-'||e.key==='-')){ keepCenterWhenZoom(scale/1.2); }
+    if(e.key==='Escape'){ measure=null; setSelectedText(null); setSelectedImage(null); requestRender(); }
+    if((e.key==='Delete' || e.key==='Backspace') && mode==='measure'){ measure=null; requestRender(); }
+    if((e.key==='Delete' || e.key==='Backspace') && mode==='text'){ const i=texts.findIndex(t=>t.id===selectedTextId); if(i>=0){ snapshot(); texts.splice(i,1); selectedTextId=null; requestRender(); } }
+    if((e.key==='Delete' || e.key==='Backspace') && mode==='image'){ const i=images.findIndex(im=>im.id===selectedImageId); if(i>=0){ snapshot(); images.splice(i,1); selectedImageId=null; requestRender(); } }
+  });
+
+  // Marks
+  function renderMarks(){
+    marksList.innerHTML='';
+    for(const m of marks){
+      const li=document.createElement('li');
+      const a=document.createElement('button'); a.textContent=m.name; a.onclick=()=> setScaleAndCenter(m.scale,{x:m.x,y:m.y});
+      const del=document.createElement('button'); del.textContent='✖'; del.onclick=()=>{ snapshot(); const i=marks.findIndex(x=>x.id===m.id); if(i>=0) marks.splice(i,1); renderMarks(); requestRender(); };
+      li.appendChild(a); li.appendChild(del); marksList.appendChild(li);
+    }
+  }
+  function setScaleAndCenter(nextScale, p){
+    scale=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,nextScale));
+    const c={x:canvas.clientWidth/2,y:canvas.clientHeight/2};
+    offset.x=c.x-p.x*scale; offset.y=c.y-p.y*scale; requestRender(); updateZoomUI();
+  }
+
+  // ===== Save / Load =====
+  function fileTimestamp(){
+    const d=new Date(); const pad=n=>String(n).padStart(2,'0');
+    return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  }
+  function downloadText(filename, text){
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([text], {type:'application/json'}));
+    a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),0);
+  }
+  async function imgToDataURL(img){
+    const c=document.createElement('canvas'); c.width=img.naturalWidth||1; c.height=img.naturalHeight||1;
+    const g=c.getContext('2d'); g.drawImage(img,0,0);
+    try{ return c.toDataURL('image/png'); }catch(e){ return null; }
+  }
+  async function serializeImages(){
+    const out=[];
+    for(const im of images){
+      let src = im.src || '';
+      if(src.startsWith('blob:') && im.img){
+        const d=await imgToDataURL(im.img); if(d) src=d;
+      }
+      out.push({id:im.id, type:'image', x:im.x, y:im.y, w:im.w, h:im.h, src});
+    }
+    return out;
+  }
+  async function saveProject(){
+    const payload = {
+      v: '3.7', kind: 'infinite-canvas',
+      canvas: {
+        scale, offset,
+        strokes, fills, marks, texts,
+        images: await serializeImages(),
+        measure,
+        defaultFontFamily, defaultTextSizeWorld
+      }
+    };
+    const json=JSON.stringify(payload);
+    downloadText(`canvas-${fileTimestamp()}.icv`, json);
+    statusEl.textContent='Išsaugota'; setTimeout(()=>statusEl.textContent='',1500);
+  }
+  function loadProject(data){
+    try{
+      const c = (data && (data.canvas||data)) || {};
+      snapshot();
+      strokes.splice(0,strokes.length, ...(c.strokes||[]));
+      fills.splice(0,fills.length, ...(c.fills||[]));
+      marks.splice(0,marks.length, ...(c.marks||[]));
+      texts.splice(0,texts.length, ...(c.texts||[]));
+      selectedTextId=null; selectedImageId=null;
+      restoreImages(c.images||[]);
+      measure = c.measure || null;
+      scale   = c.scale ?? scale; offset = c.offset ?? offset;
+      defaultFontFamily = c.defaultFontFamily || defaultFontFamily;
+      defaultTextSizeWorld = c.defaultTextSizeWorld || defaultTextSizeWorld;
+      renderMarks(); updateZoomUI(); requestRender();
+      statusEl.textContent='Projektas įkeltas'; setTimeout(()=>statusEl.textContent='',1500);
+    }catch(e){ console.error(e); statusEl.textContent='Klaida atidarant'; setTimeout(()=>statusEl.textContent='',2000); }
+  }
+  saveBtn.onclick = ()=>{ saveProject(); };
+  openBtn.onclick = ()=>{ openFile.click(); };
+  openFile.onchange = async (e)=>{
+    const f=e.target.files?.[0]; if(!f) return;
+    try{ const text=await f.text(); const data=JSON.parse(text); loadProject(data); }catch(err){ console.error(err); statusEl.textContent='Nepavyko nuskaityti failo'; setTimeout(()=>statusEl.textContent='',2000); }
+    openFile.value='';
+  };
+  // Shortcuts
+  window.addEventListener('keydown', e=>{
+    const k=e.key.toLowerCase();
+    if((e.ctrlKey||e.metaKey) && k==='s'){ e.preventDefault(); saveProject(); }
+    if((e.ctrlKey||e.metaKey) && k==='o'){ e.preventDefault(); openFile.click(); }
+  });
+
+  // Recording (WebM -> MP4 lokal)
+  let recorder=null, chunks=[]; let ffmpegLoaded=false, ffmpeg=null, fetchFile=null;
+  const recStartBtn=document.getElementById('recStart');
+  const recStopBtn=document.getElementById('recStopMp4');
+  function setRecUI(on,msg=''){ recStartBtn.disabled=on; recStopBtn.disabled=!on; statusEl.textContent=msg; }
+  async function ensureFFmpeg(){ if(ffmpegLoaded) return; setRecUI(true,'Kraunama MP4 konversija…'); const mod=await import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.7/dist/ffmpeg.min.js'); ffmpeg=mod.createFFmpeg({log:false}); fetchFile=mod.fetchFile; await ffmpeg.load(); ffmpegLoaded=true; setRecUI(false,''); }
+  function pickMime(){ const m=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm']; for(const t of m){ if(MediaRecorder.isTypeSupported(t)) return t; } return ''; }
+  async function startRec(fps=60){ try{ if(recorder) return; const s=canvas.captureStream?canvas.captureStream(fps):canvas.mozCaptureStream(fps); const mt=pickMime(); recorder=new MediaRecorder(s, mt?{mimeType:mt}:undefined); chunks=[]; recorder.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); }; recorder.start(); isRecording=true; setRecUI(true,'Įrašoma…'); }catch(e){ console.error(e); isRecording=false; statusEl.textContent='Nepavyko pradėti įrašo'; } }
+  async function stopRecSave(){ if(!recorder) return; const r=recorder; recorder=null; const done=new Promise(res=>r.onstop=()=>res()); r.stop(); isRecording=false; await done; const webm=new Blob(chunks,{type:'video/webm'}); try{ await ensureFFmpeg(); setRecUI(true,'Kuriamas MP4…'); ffmpeg.FS('writeFile','in.webm', await fetchFile(webm)); await ffmpeg.run('-i','in.webm','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart','out.mp4'); const out=ffmpeg.FS('readFile','out.mp4'); const mp4=new Blob([out.buffer],{type:'video/mp4'}); const a=document.createElement('a'); a.href=URL.createObjectURL(mp4); a.download='canvas.mp4'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),0); setRecUI(false,'MP4 išsaugotas'); setTimeout(()=>statusEl.textContent='',2000);}catch(e){ console.error(e); const a=document.createElement('a'); a.href=URL.createObjectURL(webm); a.download='canvas.webm'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),0); setRecUI(false,'MP4 nepavyko, išsaugota WebM'); } }
+  recStartBtn.onclick=()=>startRec(60);
+  recStopBtn.onclick =()=>stopRecSave();
+  setRecUI(false,'');
+
+  // ===== Init =====
+  resizeCanvas();
+  offset.x=canvas.clientWidth/2; offset.y=canvas.clientHeight/2; // center
+  updateZoomUI();
+  defaultTextSizeWorld = (24/scale);
+  showTextControls(false);
+  sizePxEl.textContent = `${brushSizeScreen} px`;
+  setMode('draw');
+})();
+</script>
+</body>
+</html>
