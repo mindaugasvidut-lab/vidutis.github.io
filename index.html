@@ -836,7 +836,9 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
   undoBtn.onclick = ()=> undo();
   resetBtn.onclick = ()=> { keepCenterWhenZoom(1); offset.x=canvas.clientWidth/2; offset.y=canvas.clientHeight/2; requestRender(); };
   colorEl.oninput = ()=> { currentColor=colorEl.value; const sel=getSelectedText(); if(isTextMode() && sel){ sel.color=currentColor; requestRender(); } };
-  sizeEl.oninput = ()=> { brushSizeScreen = +sizeEl.value; sizePxEl.textContent = `${brushSizeScreen} px`; };
+  sizeEl.oninput = ()=> { brushSizeScreen = +sizeEl.value; sizePxEl.textContent = `${brushSizeScreen} px`;
+  // iš anksto bandome užkrauti FFmpeg (jei offline, tiesiog praleis)
+  ensureFFmpeg().catch(()=>{}); };
 
   window.addEventListener('keydown', e=>{
     if(e.code==='Space'){ setMode('pan'); }
@@ -942,7 +944,7 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
     if((e.ctrlKey||e.metaKey) && k==='o'){ e.preventDefault(); openFile.click(); }
   });
 
-  // Recording (WebM -> MP4 lokal) — DESKTOP MP4
+  // Recording (WebM -> MP4 lokal) — DESKTOP MP4 (robust)
   let recorder = null;
   let chunks = [];
   let ffmpegLoaded = false;
@@ -957,23 +959,40 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
     statusEl.textContent = msg;
   }
 
+  // Try two CDNs for @ffmpeg/ffmpeg; single-thread core (no COOP/COEP needed)
   async function ensureFFmpeg(){
     if(ffmpegLoaded && ffmpeg) return;
-    setRecUI(true,'Kraunamas FFmpeg…');
-    const { FFmpeg } = await import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js');
+    setRecUI(true, 'Kraunamas FFmpeg…');
+    let mod = null, core = null;
+    try{
+      mod  = await import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js');
+      core = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/ffmpeg-core.js';
+    }catch(e1){
+      console.warn('unpkg nepavyko, bandau jsDelivr', e1);
+      try{
+        mod  = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js');
+        core = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/ffmpeg-core.js';
+      }catch(e2){
+        console.error('Abi CDN nepavyko', e2);
+        setRecUI(false, 'FFmpeg neįsikrovė – bus WebM');
+        throw e2;
+      }
+    }
+    const { FFmpeg } = mod;
     ffmpeg = new FFmpeg();
-    await ffmpeg.load({ coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/ffmpeg-core.js' });
+    await ffmpeg.load({ coreURL: core });
     ffmpegLoaded = true;
-    setRecUI(false,'');
+    setRecUI(false, '');
   }
 
   function pickMime(){
-    const list = ['video/mp4;codecs=h264','video/webm;codecs=vp9','video/webm;codecs=vp8,opus'];
+    // MP4 pirmas, tada WebM su VP8 (plačiausia palaika FFmpeg ir naršyklių)
+    const list = ['video/mp4;codecs=h264','video/webm;codecs=vp8','video/webm'];
     for(const t of list){ try{ if(MediaRecorder.isTypeSupported(t)) return t; }catch{} }
     return '';
   }
 
-  async function startRec(fps=60){
+  async function startRec(fps=30){
     try{
       if(recorder) return;
       chunks.length = 0;
@@ -983,10 +1002,10 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
       recorder = mt ? new MediaRecorder(s, { mimeType: mt }) : new MediaRecorder(s);
       recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
       recorder.onstop = ()=>{};
-      recorder.start();
+      recorder.start(100);
       setRecUI(true,'Įrašoma…');
     }catch(e){
-      console.error(e);
+      console.error('startRec klaida', e);
       statusEl.textContent = 'Nepavyko pradėti įrašo';
       setRecUI(false,'');
       recorder = null;
@@ -1014,9 +1033,10 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
 
     try{
       await ensureFFmpeg();
+      setRecUI(true, 'Konvertuojama į MP4…');
       const input = new Uint8Array(await blob.arrayBuffer());
       await ffmpeg.writeFile('in.webm', input);
-      await ffmpeg.exec(['-i','in.webm','-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-movflags','+faststart','-y','out.mp4']);
+      await ffmpeg.exec(['-i','in.webm','-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-movflags','+faststart','-an','-y','out.mp4']);
       const out = await ffmpeg.readFile('out.mp4');
       const mp4 = new Blob([out.buffer], { type:'video/mp4' });
       const a = document.createElement('a');
@@ -1025,16 +1045,16 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
       document.body.appendChild(a); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
       setRecUI(false,'Išsaugota MP4');
     }catch(e){
-      console.error(e);
+      console.error('FFmpeg/konversijos klaida', e);
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = 'canvas.webm';
       document.body.appendChild(a); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
-      setRecUI(false,'MP4 nepavyko, išsaugota WebM');
+      setRecUI(false,'FFmpeg neįsikrovė/konversija nepavyko – išsaugota WebM');
     }
   }
 
-  recStartBtn.onclick = ()=> startRec(60);
+  recStartBtn.onclick = ()=> startRec(30);
   recStopBtn.onclick  = ()=> stopRecSave();
 // ===== Init =====
   resizeCanvas();
@@ -1043,6 +1063,8 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
   defaultTextSizeWorld = (24/scale);
   showTextControls(false);
   sizePxEl.textContent = `${brushSizeScreen} px`;
+  // iš anksto bandome užkrauti FFmpeg (jei offline, tiesiog praleis)
+  ensureFFmpeg().catch(()=>{});
   setMode('draw');
 })();
 </script>
