@@ -942,33 +942,125 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
     if((e.ctrlKey||e.metaKey) && k==='o'){ e.preventDefault(); openFile.click(); }
   });
 
-  // Recording (WebM -> MP4 lokal)
-  let recorder=null, chunks=[]; let ffmpegLoaded=false, ffmpeg=null, fetchFile=null;
-  const recStartBtn=document.getElementById('recStart');
-  const recStopBtn=document.getElementById('recStopMp4');
-  function setRecUI(on,msg=''){ recStartBtn.disabled=on; recStopBtn.disabled=!on; statusEl.textContent=msg; }
-  // iOS/iPad: pasiūlyti Share Sheet, kad vartotojas galėtų "Save Video" į Nuotraukas
-  async function offerShare(blob){
+  // Recording (WebM -> MP4 lokal) — CLEAN
+  let recorder = null;
+  let chunks = [];
+  let ffmpegLoaded = false;
+  let ffmpeg = null;
+
+  const recStartBtn = document.getElementById('recStart');
+  const recStopBtn  = document.getElementById('recStopMp4');
+
+  function setRecUI(on, msg=''){
+    recStartBtn.disabled = on;
+    recStopBtn.disabled  = !on;
+    statusEl.textContent = msg;
+  }
+
+  // iOS Share helper — rodo klausimą ir atidaro Share → "Save Video"
+  async function offerShare(blob, ask=true){
     try{
-      const file = new File([blob], 'canvas.mp4', { type: 'video/mp4' });
+      const file = new File([blob], 'canvas.mp4', { type:'video/mp4' });
+      if(ask){
+        const ok = window.confirm('Įrašyti vaizdo įrašą į „Nuotraukos“ (Photos)?');
+        if(!ok) return false;
+      }
       if(navigator.canShare && navigator.canShare({ files:[file] })){
         await navigator.share({ files:[file], title:'Canvas įrašas' });
-        // Jei vartotojas pasirinko "Save Video" – mp4 atsidurs Photos. Jei atšaukė, nieko.
         return true;
       }
     }catch(e){ console.warn('Share nepavyko', e); }
     return false;
   }
-  async function ensureFFmpeg(){ if(ffmpegLoaded) return; setRecUI(true,'Kraunama MP4 konversija…'); const mod=await import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.7/dist/ffmpeg.min.js'); ffmpeg=mod.createFFmpeg({log:false}); fetchFile=mod.fetchFile; await ffmpeg.load(); ffmpegLoaded=true; setRecUI(false,''); }
-  function pickMime(){ const m=['video/mp4;codecs=h264','video/webm;codecs=vp9','video/webm;codecs=vp8,opus'];
-  for(const t of m){ if(MediaRecorder.isTypeSupported(t)) return t; } return ''; }
-  async function startRec(fps=60){ try{ if(recorder) return; const s=canvas.captureStream?canvas.captureStream(fps):canvas.mozCaptureStream(fps); const mt=pickMime(); recorder=new MediaRecorder(s, mt?{mimeType:mt}:undefined); chunks=[]; recorder.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); }; recorder.start(); isRecording=true; setRecUI(true,'Įrašoma…'); }catch(e){ console.error(e); isRecording=false; statusEl.textContent='Nepavyko pradėti įrašo'; } }
-  async function stopRecSave(){ if(!recorder) return; const r=recorder; recorder=null; const done=new Promise(res=>r.onstop=()=>res()); r.stop(); isRecording=false; await done; const webm=new Blob(chunks,{type:'video/webm'}); try{ await ensureFFmpeg(); setRecUI(true,'Kuriamas MP4…'); ffmpeg.FS('writeFile','in.webm', await fetchFile(webm)); await ffmpeg.run('-i','in.webm','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart','out.mp4'); const out=ffmpeg.FS('readFile','out.mp4'); const mp4=new Blob([out.buffer],{type:'video/mp4'}); const a=document.createElement('a'); a.href=URL.createObjectURL(mp4); a.download='canvas.mp4'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),0); setRecUI(false,'MP4 išsaugotas'); setTimeout(()=>statusEl.textContent='',2000);}catch(e){ console.error(e); const a=document.createElement('a'); a.href=URL.createObjectURL(webm); a.download='canvas.webm'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),0); setRecUI(false,'MP4 nepavyko, išsaugota WebM'); } }
-  recStartBtn.onclick=()=>startRec(60);
-  recStopBtn.onclick =()=>stopRecSave();
-  setRecUI(false,'');
 
-  // ===== Init =====
+  async function ensureFFmpeg(){
+    if(ffmpegLoaded && ffmpeg) return;
+    setRecUI(true,'Kraunamas FFmpeg…');
+    const { FFmpeg } = await import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js');
+    ffmpeg = new FFmpeg();
+    await ffmpeg.load({ coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/ffmpeg-core.js' });
+    ffmpegLoaded = true;
+    setRecUI(false,'');
+  }
+
+  function pickMime(){
+    const list = ['video/mp4;codecs=h264', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8,opus'];
+    for(const t of list){ try{ if(MediaRecorder.isTypeSupported(t)) return t; }catch{} }
+    return '';
+  }
+
+  async function startRec(fps=60){
+    try{
+      if(recorder) return;
+      chunks.length = 0;
+      setRecUI(true,'Pradedamas įrašas…');
+      const s = (canvas.captureStream ? canvas.captureStream(fps) : canvas.mozCaptureStream(fps));
+      const mt = pickMime();
+      recorder = mt ? new MediaRecorder(s, { mimeType: mt }) : new MediaRecorder(s);
+      recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+      recorder.onstop = ()=>{};
+      recorder.start();
+      setRecUI(true,'Įrašoma…');
+    }catch(e){
+      console.error(e);
+      statusEl.textContent = 'Nepavyko pradėti įrašo';
+      setRecUI(false,'');
+      recorder = null;
+    }
+  }
+
+  async function stopRecSave(){
+    if(!recorder) return;
+    const r = recorder; recorder = null;
+    statusEl.textContent = 'Baigiama…';
+    await new Promise(res => { r.addEventListener('stop', res, { once:true }); r.stop(); });
+    const type = r.mimeType || 'video/webm';
+    const blob = new Blob(chunks, { type });
+    chunks.length = 0;
+
+    // Jei jau MP4 — siūlom Share, tada fallback į download
+    if((type||'').includes('video/mp4')){
+      const shared = await offerShare(blob, true);
+      if(!shared){
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'canvas.mp4';
+        document.body.appendChild(a); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+      }
+      setRecUI(false,'Išsaugota MP4');
+      return;
+    }
+
+    // WebM → MP4 konversija
+    try{
+      await ensureFFmpeg();
+      const input = new Uint8Array(await blob.arrayBuffer());
+      await ffmpeg.writeFile('in.webm', input);
+      await ffmpeg.exec(['-i','in.webm','-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-movflags','+faststart','-y','out.mp4']);
+      const out = await ffmpeg.readFile('out.mp4');
+      const mp4 = new Blob([out.buffer], { type:'video/mp4' });
+
+      const shared = await offerShare(mp4, true);
+      if(!shared){
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(mp4);
+        a.download = 'canvas.mp4';
+        document.body.appendChild(a); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+      }
+      setRecUI(false,'Išsaugota MP4');
+    }catch(e){
+      console.error(e);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'canvas.webm';
+      document.body.appendChild(a); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+      setRecUI(false,'MP4 nepavyko, išsaugota WebM');
+    }
+  }
+
+  recStartBtn.onclick = ()=> startRec(60);
+  recStopBtn.onclick  = ()=> stopRecSave();
+// ===== Init =====
   resizeCanvas();
   offset.x=canvas.clientWidth/2; offset.y=canvas.clientHeight/2; // center
   updateZoomUI();
