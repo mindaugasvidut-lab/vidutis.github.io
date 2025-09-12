@@ -36,6 +36,12 @@
   #scaleBar { width:100%; height:16px; position:relative; border:1px dashed var(--border); border-radius:.3rem; background:#fff; }
   #scaleBarFill { position:absolute; top:0; left:0; height:100%; background:var(--accent); opacity:.2; border-right:2px solid var(--accent); }
   #scaleBarText { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:.75rem; color:var(--muted); }
+  canvas {
+    -webkit-user-select: none;   /* Safari */
+    -webkit-touch-callout: none; /* iOS long-press meniu */
+    user-select: none;
+    touch-action: none;          /* neleisti double-tap zoom / selection */
+  }
 </style>
 </head>
 <body>
@@ -85,6 +91,24 @@
     <span id="status"></span>
   </div>
   <div id="stage"><canvas id="canvas"></canvas></div>
+  
+  <script>
+  const canvas = document.getElementById('canvas');
+
+  // Neleisti iPad / iPhone dvigubo tapinimo arba teksto pasirinkimo
+  canvas.addEventListener('touchstart', e => {
+    if (e.touches.length > 1) {
+      e.preventDefault();
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('gesturestart', e => e.preventDefault());
+</script>
+
+  
+  
+  
+  
   <aside id="marks">
     <!-- Zoom panel -->
     <div id="zoomBox">
@@ -110,11 +134,15 @@
 </div>
 <script>
 (() => {
+
+
+
+
   // ==== PHYSICS / UNITS ================================
-  const MIN_MPP = 1e-12;   // meters per pixel (1 pm)
-  const MAX_MPP = 1e3;     // meters per pixel (1 km)
-  const MIN_ZOOM = 1 / MAX_MPP; // 0.001
-  const MAX_ZOOM = 1 / MIN_MPP; // 1e9
+const MIN_MPP = 1e-15; // 1 femtometras
+const MAX_MPP = 1;     // 1 metras
+const MIN_ZOOM = 1 / MAX_MPP; // 1
+const MAX_ZOOM = 1 / MIN_MPP; // 1e15
 
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
@@ -237,22 +265,27 @@
     }
     return null;
   }
-  function imageHandleRects(im){
-    const b=computeImageBBoxScreen(im); const s=8; // px size
-    return {
-      nw:{x:b.x-s/2,y:b.y-s/2,w:s,h:s},
-      ne:{x:b.x+b.w-s/2,y:b.y-s/2,w:s,h:s},
-      se:{x:b.x+b.w-s/2,y:b.y+b.h-s/2,w:s,h:s},
-      sw:{x:b.x-s/2,y:b.y+b.h-s/2,w:s,h:s}
-    };
-  }
-  function imageHandleHitTest(pS, im){
-    const hs=imageHandleRects(im);
-    for(const k of ['nw','ne','se','sw']){
-      const r=hs[k]; if(pS.x>=r.x&&pS.x<=r.x+r.w&&pS.y>=r.y&&pS.y<=r.y+r.h) return k;
+function imageHandleRects(im){
+  const b = computeImageBBoxScreen(im);
+  const s = 16;
+  return {
+    nw:{x:b.x-s/2,y:b.y-s/2,w:s,h:s},
+    ne:{x:b.x+b.w-s/2,y:b.y-s/2,w:s,h:s},
+    se:{x:b.x+b.w-s/2,y:b.y+b.h-s/2,w:s,h:s},
+    sw:{x:b.x-s/2,y:b.y+b.h-s/2,w:s,h:s},
+    rot:{x:b.x+b.w/2-8, y:b.y-30, w:16, h:16}  // <<< nauja rankenėlė
+  };
+}
+function imageHandleHitTest(pS, im){
+  const hs=imageHandleRects(im);
+  for(const k of ['nw','ne','se','sw','rot']){   // pridėjau 'rot'
+    const r=hs[k];
+    if(pS.x>=r.x && pS.x<=r.x+r.w && pS.y>=r.y && pS.y<=r.y+r.h){
+      return k;
     }
-    return null;
   }
+  return null;
+}
 
   // ===== Geometry helpers =====
   const screenToWorld = p => ({ x:(p.x - offset.x)/scale, y:(p.y - offset.y)/scale });
@@ -278,7 +311,7 @@
   // ===== Units / labels =====
   function worldMetersPerPixel(){ return 1/scale; }
   function chooseUnit(m){
-    const units=[{sym:'km',m:1e3},{sym:'m',m:1},{sym:'cm',m:1e-2},{sym:'mm',m:1e-3},{sym:'µm',m:1e-6},{sym:'nm',m:1e-9},{sym:'pm',m:1e-12}];
+    const units=[{sym:'km',m:1e3},{sym:'m',m:1},{sym:'cm',m:1e-2},{sym:'mm',m:1e-3},{sym:'µm',m:1e-6},{sym:'nm',m:1e-9},{sym:'pm',m:1e-12},{sym:'fm',m:1e-15}];
     let best=units[0], bestScore=Infinity;
     for(const u of units){
       const v=m/u.m; const score=Math.abs(Math.log10(v));
@@ -330,7 +363,7 @@
       marks: JSON.parse(JSON.stringify(marks)),
       texts: JSON.parse(JSON.stringify(texts)),
       selectedTextId,
-      images: images.map(im=>({id:im.id,x:im.x,y:im.y,w:im.w,h:im.h,src:im.src})),
+      images: images.map(im=>({id:im.id,x:im.x,y:im.y,w:im.w,h:im.h,src:im.src, angle: im.angle||0})),
       selectedImageId,
       measure: measure ? {a:{...measure.a}, b:{...measure.b}} : null,
       scale, offset: {...offset}
@@ -343,7 +376,7 @@
       const img = new Image();
       img.onload = ()=> requestRender();
       img.src = im.src;
-      images.push({id:im.id,type:'image',x:im.x,y:im.y,w:im.w,h:im.h,src:im.src,img});
+      images.push({id:im.id,type:'image',x:im.x,y:im.y,w:im.w,h:im.h,src:im.src,img, angle: im.angle||0});
     }
   }
   function undo(){
@@ -468,7 +501,11 @@
       const bb=computeImageBBoxWorld(im);
       if(!bb || bboxIntersects(bb, vis)){
         const s = computeImageBBoxScreen(im);
-        if(im.img && im.img.complete){ ctx.drawImage(im.img, s.x, s.y, s.w, s.h); }
+        if(im.img && im.img.complete){ ctx.save();
+ctx.translate(s.x+s.w/2, s.y+s.h/2);
+ctx.rotate(im.angle || 0);
+ctx.drawImage(im.img, -s.w/2, -s.h/2, s.w, s.h);
+ctx.restore(); }
       }
     }
 
@@ -551,10 +588,23 @@
         ctx.save();
         ctx.setLineDash([5,3]); ctx.strokeStyle='rgba(59,130,246,0.9)'; ctx.lineWidth=1; ctx.strokeRect(b.x,b.y,b.w,b.h);
         ctx.setLineDash([]);
-        const hs=imageHandleRects(selIm);
-        ctx.fillStyle='rgba(59,130,246,0.95)';
-        for(const k of ['nw','ne','se','sw']){ const r=hs[k]; ctx.fillRect(r.x, r.y, r.w, r.h); }
-        ctx.restore();
+const hs=imageHandleRects(selIm);
+ctx.fillStyle='rgba(59,130,246,0.95)';
+for(const k of ['nw','ne','se','sw']){
+  const r=hs[k];
+  ctx.fillRect(r.x,r.y,r.w,r.h);
+}
+
+// rot rankenėlė
+const rot = hs.rot;
+ctx.beginPath();
+ctx.arc(rot.x + rot.w/2, rot.y + rot.h/2, 8, 0, Math.PI*2);
+ctx.fill();
+
+// rot rankenėlė
+ctx.beginPath();
+ctx.arc(hs.rot.x+hs.rot.w/2, hs.rot.y+hs.rot.h/2, 8, 0, Math.PI*2);
+ctx.fill();
       }
     }
 
@@ -584,35 +634,51 @@
       pinch={startDist:Math.max(1,d0), startScale:scale, midWorld:screenToWorld(mid)}; return;
     }
 
-    
+
+
+
+ 
 if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; return; }
     if(e.pointerType==='mouse' && e.button!==0) return;
 
     const pW = screenToWorld(pS);
 
     // IMAGES mode
-    if(mode==='image'){
-      const hit = imageHitTestScreen(pS);
-      if(hit){
-        setSelectedImage(hit);
-        snapshot();
-        const handle = imageHandleHitTest(pS, hit);
-        if(handle){
-          // start resize from opposite anchor
-          const ax = (handle==='nw'||handle==='sw') ? (hit.x+hit.w) : hit.x;
-          const ay = (handle==='nw'||handle==='ne') ? (hit.y+hit.h) : hit.y;
-          drawing={type:'imageresize', targetId:hit.id, handle, anchor:{x:ax,y:ay}, ratio: Math.abs(hit.h/(hit.w||1e-9))};
-        } else {
-          drawing={type:'imagedrag', targetId:hit.id, dx:pW.x-hit.x, dy:pW.y-hit.y};
-        }
-        requestRender();
-        return;
-      } else {
-        setSelectedImage(null);
-        requestRender();
-        return;
-      }
+if(mode==='image'){
+  const sel = getSelectedImage();
+  if(sel){
+    const handle = imageHandleHitTest(pS, sel);
+    if(handle==='rot'){
+      snapshot();
+      const cx = sel.x + sel.w/2;
+      const cy = sel.y + sel.h/2;
+      const centerW = screenToWorld({x: cx, y: cy});
+      drawing = {type:'imagerotate', targetId:sel.id, cx:centerW.x, cy:centerW.y};
+      requestRender();
+      return;
+    } else if(handle){
+      snapshot();
+      const ax = (handle==='nw'||handle==='sw') ? (sel.x+sel.w) : sel.x;
+      const ay = (handle==='nw'||handle==='ne') ? (sel.y+sel.h) : sel.y;
+      drawing={type:'imageresize', targetId:sel.id, handle, anchor:{x:ax,y:ay}, ratio:Math.abs(sel.h/(sel.w||1e-9))};
+      requestRender();
+      return;
     }
+  }
+
+  const hit = imageHitTestScreen(pS);
+  if(hit){
+    setSelectedImage(hit);
+    snapshot();
+    drawing={type:'imagedrag', targetId:hit.id, dx:pW.x-hit.x, dy:pW.y-hit.y};
+    requestRender();
+    return;
+  } else {
+    setSelectedImage(null);
+    requestRender();
+    return;
+  }
+}
 
     // TEXT
     if(mode==='text'){
@@ -727,7 +793,7 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
           const dx=pW.x-ax, dy=pW.y-ay;
           const signX = (drawing.handle==='ne'||drawing.handle==='se') ? 1 : -1;
           const signY = (drawing.handle==='sw'||drawing.handle==='se') ? 1 : -1;
-          const candW = Math.abs(dx); const candW2 = Math.abs(dy)/r; const W = Math.max(1e-6, Math.max(candW, candW2));
+          const candW = Math.abs(dx); const candW2 = Math.abs(dy)/r; const W = Math.max(1e-20, Math.max(candW, candW2));
           const H = W * r;
           const x1 = ax; const y1 = ay;
           const x2 = ax + signX * W; const y2 = ay + signY * H;
@@ -736,6 +802,26 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
         }
         return;
       }
+	  
+	  
+	  
+	  if(drawing.type==='imagerotate'){
+  const im = images.find(it=>it.id===drawing.targetId);
+  if(im){
+    const dx = pW.x - drawing.cx;
+    const dy = pW.y - drawing.cy;
+    im.angle = Math.atan2(dy, dx);
+    requestRender();
+  }
+  return;
+}
+	  
+	  
+	  
+	  
+	  
+	  
+
       if(drawing.type==='stroke'){
         const last = drawing.points[drawing.points.length-1];
         const lastS = last ? worldToScreen(last) : null;
@@ -791,7 +877,7 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
       const hWorld= wWorld * (img.naturalHeight/(img.naturalWidth||1));
       const c = {x:canvas.clientWidth/2,y:canvas.clientHeight/2};
       const centerW = screenToWorld(c);
-      const im = {id:Date.now(), type:'image', x:centerW.x - wWorld/2, y:centerW.y - hWorld/2, w:wWorld, h:hWorld, src:url, img};
+      const im = {id:Date.now(), type:'image', x:centerW.x - wWorld/2, y:centerW.y - hWorld/2, w:wWorld, h:hWorld, src:url, img,  angle: 0  };
       images.push(im); setSelectedImage(im); setMode('image'); requestRender();
     };
     img.src=url; 
@@ -823,7 +909,7 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
       const hWorld= wWorld * (img.naturalHeight/(img.naturalWidth||1));
       const c = {x:canvas.clientWidth/2,y:canvas.clientHeight/2};
       const centerW = screenToWorld(c);
-      const im = {id:Date.now(), type:'image', x:centerW.x - wWorld/2, y:centerW.y - hWorld/2, w:wWorld, h:hWorld, src:url, img};
+      const im = {id:Date.now(), type:'image', x:centerW.x - wWorld/2, y:centerW.y - hWorld/2, w:wWorld, h:hWorld, src:url, img,  angle: 0  };
       images.push(im); setSelectedImage(im); setMode('image'); requestRender();
     };
     img.src=url; imagePicker.value='';
@@ -891,7 +977,7 @@ if(mode==='pan' || touchLike){ panPrev=pS; canvas.style.cursor='grabbing'; retur
       if(src.startsWith('blob:') && im.img){
         const d=await imgToDataURL(im.img); if(d) src=d;
       }
-      out.push({id:im.id, type:'image', x:im.x, y:im.y, w:im.w, h:im.h, src});
+      out.push({id:im.id, type:'image', x:im.x, y:im.y, w:im.w, h:im.h, src, angle: im.angle||0});
     }
     return out;
   }
